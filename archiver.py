@@ -140,8 +140,11 @@ async def sync_user_profile(user: User):
     )
 
 
-async def save_message(event, sender: User):
-    user_id = sender.id
+async def save_message(event, peer: User):
+    # `peer` is always the OTHER person in this private chat — whether the
+    # message was sent by them or by us. This is the key we group by, so
+    # both sides of the conversation land under the same user document.
+    user_id = peer.id
     msg = event.message
     MSG_TO_USER[msg.id] = user_id
 
@@ -169,18 +172,18 @@ async def save_message(event, sender: User):
         str(msg.id)
     ).set(data, merge=True)
 
-    await sync_user_profile(sender)
+    await sync_user_profile(peer)
 
 
 @client.on(events.NewMessage)
 async def on_new_message(event):
     if not event.is_private:
         return  # skip groups/channels entirely
-    sender = await event.get_sender()
-    if not isinstance(sender, User) or sender.bot:
-        return
+    peer = await event.get_chat()
+    if not isinstance(peer, User) or peer.bot:
+        return  # skip bot chats
     try:
-        await save_message(event, sender)
+        await save_message(event, peer)
     except Exception as e:
         log.error("failed to save new message: %s", e)
 
@@ -189,14 +192,14 @@ async def on_new_message(event):
 async def on_edit(event):
     if not event.is_private:
         return
-    sender = await event.get_sender()
-    if not isinstance(sender, User) or sender.bot:
+    peer = await event.get_chat()
+    if not isinstance(peer, User) or peer.bot:
         return
 
     msg = event.message
-    MSG_TO_USER[msg.id] = sender.id
+    MSG_TO_USER[msg.id] = peer.id
 
-    db.collection("users").document(str(sender.id)).collection("messages").document(
+    db.collection("users").document(str(peer.id)).collection("messages").document(
         str(msg.id)
     ).set(
         {
