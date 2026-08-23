@@ -2,123 +2,157 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Chat Archive</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
+<title>root@archive:~$</title>
 <style>
   :root {
-    --sidebar-bg: #17212b;
-    --sidebar-hover: #202b36;
-    --sidebar-active: #2b5278;
-    --chat-bg: #0e1621;
-    --header-bg: #17212b;
-    --bubble-in: #182533;
-    --bubble-out: #2b5278;
-    --bubble-out-deleted: #3a2b2e;
-    --bubble-in-deleted: #241b1c;
-    --text-primary: #e9edf1;
-    --text-secondary: #7d8b99;
-    --accent: #4ea4f5;
-    --divider: #0f1b26;
-    --danger: #e35a5a;
-    --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --bg: #0a0e0a;
+    --panel: #0d130d;
+    --panel-hover: #121a12;
+    --panel-active: #17321c;
+    --border: #1d2e1d;
+    --green: #33ff66;
+    --green-dim: #1f9c3f;
+    --green-faint: #4d7a58;
+    --bubble-in: #10160f;
+    --bubble-out: #10240f;
+    --text: #c9f5d1;
+    --font: 'JetBrains Mono', 'Fira Code', 'Courier New', ui-monospace, monospace;
   }
   * { box-sizing: border-box; }
   html, body {
     height: 100%; margin: 0; padding: 0;
     font-family: var(--font);
-    background: var(--chat-bg);
-    color: var(--text-primary);
+    background: var(--bg);
+    color: var(--text);
     -webkit-font-smoothing: antialiased;
+  }
+  body {
+    background-image:
+      linear-gradient(rgba(20,40,20,0.06) 1px, transparent 1px);
+    background-size: 100% 3px;
   }
   #app { display: flex; height: 100%; }
 
+  /* ---------------- Sidebar ---------------- */
   #sidebar {
-    width: 380px; min-width: 320px; background: var(--sidebar-bg);
-    display: flex; flex-direction: column; border-right: 1px solid var(--divider);
+    width: 380px; min-width: 300px; background: var(--panel);
+    display: flex; flex-direction: column; border-right: 1px solid var(--border);
   }
-  #sidebar-search { padding: 12px; border-bottom: 1px solid var(--divider); }
+  #sidebar-title {
+    padding: 12px 14px 6px; font-size: 12px; color: var(--green-dim);
+    letter-spacing: 1px; display: flex; align-items: center; gap: 8px;
+  }
+  #sidebar-title .dot {
+    width: 8px; height: 8px; border-radius: 50%; background: var(--green);
+    box-shadow: 0 0 6px var(--green); flex-shrink: 0;
+  }
+  #sidebar-search { padding: 8px 12px 12px; border-bottom: 1px solid var(--border); }
   #sidebar-search input {
-    width: 100%; padding: 9px 14px; border-radius: 20px; border: none;
-    background: #202b36; color: var(--text-primary); font-size: 14px; outline: none;
+    width: 100%; padding: 9px 12px; border-radius: 2px;
+    border: 1px solid var(--border); background: var(--bg); color: var(--green);
+    font-family: var(--font); font-size: 13px; outline: none;
   }
+  #sidebar-search input::placeholder { color: var(--green-faint); }
+  #sidebar-search input:focus { border-color: var(--green-dim); }
   #chat-list { flex: 1; overflow-y: auto; }
   .chat-item {
     display: flex; align-items: center; padding: 10px 14px; cursor: pointer;
-    border-bottom: 1px solid rgba(255,255,255,0.02);
+    border-bottom: 1px solid var(--border);
   }
-  .chat-item:hover { background: var(--sidebar-hover); }
-  .chat-item.active { background: var(--sidebar-active); }
+  .chat-item:hover { background: var(--panel-hover); }
+  .chat-item.active { background: var(--panel-active); border-left: 2px solid var(--green); }
   .avatar {
-    width: 50px; height: 50px; border-radius: 50%; object-fit: cover;
-    background: linear-gradient(135deg, #5288c1, #2b5278);
+    width: 44px; height: 44px; border-radius: 2px; object-fit: cover;
+    background: #0f1e11; border: 1px solid var(--green-dim);
     display: flex; align-items: center; justify-content: center;
-    font-size: 18px; font-weight: 600; color: #fff; flex-shrink: 0; overflow: hidden;
+    font-size: 15px; font-weight: 600; color: var(--green); flex-shrink: 0; overflow: hidden;
   }
-  #chat-header .avatar { width: 42px; height: 42px; font-size: 15px; }
+  #chat-header .avatar { width: 38px; height: 38px; font-size: 13px; }
   .chat-item-text { margin-left: 12px; overflow: hidden; flex: 1; }
   .chat-item-top { display: flex; justify-content: space-between; align-items: baseline; }
-  .chat-item-name { font-size: 15px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .chat-item-time { font-size: 12px; color: var(--text-secondary); flex-shrink: 0; margin-left: 8px; }
-  .chat-item-preview { font-size: 13px; color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px; }
-  .chat-item-preview.deleted { color: var(--danger); font-style: italic; }
+  .chat-item-name { font-size: 14px; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .chat-item-time { font-size: 11px; color: var(--green-faint); flex-shrink: 0; margin-left: 8px; }
+  .chat-item-preview { font-size: 12.5px; color: var(--green-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px; }
 
+  /* ---------------- Chat pane ---------------- */
   #chat-pane { flex: 1; display: flex; flex-direction: column; min-width: 0; }
   #chat-header {
-    display: flex; align-items: center; padding: 10px 20px; background: var(--header-bg);
-    border-bottom: 1px solid var(--divider); min-height: 64px;
+    display: flex; align-items: center; padding: 10px 18px; background: var(--panel);
+    border-bottom: 1px solid var(--border); min-height: 58px;
   }
-  #chat-header-info { margin-left: 14px; overflow: hidden; }
-  #chat-header-name { font-size: 16px; font-weight: 600; }
-  #chat-header-sub { font-size: 13px; color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 480px; }
+  #back-btn {
+    display: none; background: none; border: none; color: var(--green);
+    font-family: var(--font); font-size: 18px; margin-right: 10px; cursor: pointer;
+    padding: 4px 6px;
+  }
+  #chat-header-info { margin-left: 12px; overflow: hidden; }
+  #chat-header-name { font-size: 14.5px; font-weight: 600; color: var(--text); }
+  #chat-header-sub { font-size: 12px; color: var(--green-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 480px; }
 
-  #messages {
-    flex: 1; overflow-y: auto; padding: 20px 8%;
-    background-image: radial-gradient(circle at 25% 15%, rgba(255,255,255,0.015) 0, transparent 40%),
-                       radial-gradient(circle at 75% 85%, rgba(255,255,255,0.015) 0, transparent 40%);
+  #messages { flex: 1; overflow-y: auto; padding: 18px 8%; }
+  .day-divider {
+    text-align: center; color: var(--green-faint); font-size: 11px; margin: 16px 0;
+    letter-spacing: 1px;
   }
-  .day-divider { text-align: center; color: var(--text-secondary); font-size: 12px; margin: 14px 0; }
+  .day-divider::before, .day-divider::after { content: "── "; }
+  .day-divider::after { content: " ──"; }
   .msg-row { display: flex; margin-bottom: 6px; }
   .msg-row.out { justify-content: flex-end; }
   .bubble {
-    max-width: 60%; padding: 8px 12px 6px; border-radius: 12px; font-size: 14.5px;
-    line-height: 1.4; position: relative; word-wrap: break-word;
+    max-width: 66%; padding: 8px 12px 6px; border-radius: 2px; font-size: 14px;
+    line-height: 1.45; word-wrap: break-word; border: 1px solid var(--border);
   }
-  .msg-row.in .bubble { background: var(--bubble-in); border-top-left-radius: 3px; }
-  .msg-row.out .bubble { background: var(--bubble-out); border-top-right-radius: 3px; }
-  .bubble.deleted.in { background: var(--bubble-in-deleted); }
-  .bubble.deleted.out { background: var(--bubble-out-deleted); }
-  .bubble img { max-width: 100%; border-radius: 8px; margin-bottom: 4px; display: block; }
-  .bubble-text { white-space: pre-wrap; }
-  .bubble-meta { display: flex; gap: 6px; justify-content: flex-end; margin-top: 3px; font-size: 11px; color: rgba(255,255,255,0.5); }
-  .deleted-tag { color: var(--danger); font-weight: 600; }
-  .edited-tag { font-style: italic; }
+  .msg-row.in .bubble { background: var(--bubble-in); border-left: 2px solid var(--green-dim); }
+  .msg-row.out .bubble { background: var(--bubble-out); border-right: 2px solid var(--green); }
+  .bubble img { max-width: 100%; border-radius: 2px; margin-bottom: 4px; display: block; border: 1px solid var(--border); }
+  .bubble-text { white-space: pre-wrap; color: var(--text); }
+  .bubble-meta { display: flex; gap: 6px; justify-content: flex-end; margin-top: 3px; font-size: 10.5px; color: var(--green-faint); }
 
   #empty-state {
     flex: 1; display: flex; align-items: center; justify-content: center;
-    color: var(--text-secondary); font-size: 15px;
+    color: var(--green-faint); font-size: 14px;
   }
-  ::-webkit-scrollbar { width: 8px; }
-  ::-webkit-scrollbar-thumb { background: #22303c; border-radius: 4px; }
+  #empty-state::before { content: "> "; color: var(--green); }
+
+  ::-webkit-scrollbar { width: 7px; }
+  ::-webkit-scrollbar-thumb { background: var(--border); }
+  ::-webkit-scrollbar-thumb:hover { background: var(--green-dim); }
+
+  /* ---------------- Mobile ---------------- */
+  @media (max-width: 768px) {
+    #sidebar { width: 100%; min-width: 0; }
+    #chat-pane { display: none; }
+    #app.chat-open #sidebar { display: none; }
+    #app.chat-open #chat-pane { display: flex; width: 100%; }
+    #back-btn { display: inline-block; }
+    #messages { padding: 14px 4%; }
+    .bubble { max-width: 82%; }
+    #chat-header-sub { max-width: 60vw; }
+  }
 </style>
 </head>
 <body>
 
 <div id="app">
   <div id="sidebar">
-    <div id="sidebar-search"><input type="text" id="search-input" placeholder="Search"></div>
+    <div id="sidebar-title"><span class="dot"></span>archive://chats</div>
+    <div id="sidebar-search"><input type="text" id="search-input" placeholder="grep contact..."></div>
     <div id="chat-list"></div>
   </div>
   <div id="chat-pane">
-    <div id="empty-state">Select a chat to view messages</div>
+    <div id="empty-state">select a chat to view messages</div>
   </div>
 </div>
 
 <script>
-  const REFRESH_LIST_MS = 8000;   // sidebar refresh interval
-  const REFRESH_CHAT_MS = 3000;   // open-chat refresh interval
+  const REFRESH_LIST_MS = 20000;  // sidebar refresh interval
+  const REFRESH_CHAT_MS = 5000;   // open-chat refresh interval (incremental "after" fetch)
 
   let currentUserId = null;
   const usersCache = {};
+  let openChatMessages = new Map();  // message_id -> message object, for the currently open chat
+  let openChatCursor = null;         // latest "updated_at" seen, for incremental polling
 
   function initials(name) { return name ? name.trim().charAt(0).toUpperCase() : "?"; }
 
@@ -155,9 +189,11 @@
     }
   }
 
-  async function fetchMessages(userId) {
+  async function fetchMessages(userId, after) {
     try {
-      const res = await fetch("/api/messages?user_id=" + encodeURIComponent(userId));
+      let url = "/api/messages?user_id=" + encodeURIComponent(userId);
+      if (after) url += "&after=" + encodeURIComponent(after);
+      const res = await fetch(url);
       return await res.json();
     } catch (e) {
       console.error("failed to load messages", e);
@@ -197,13 +233,12 @@
       top.appendChild(nameEl); top.appendChild(timeEl);
 
       const preview = document.createElement("div");
-      preview.className = "chat-item-preview" + (u.last && u.last.deleted ? " deleted" : "");
+      preview.className = "chat-item-preview";
+      // Deleted messages are shown exactly like normal ones — no indicator here.
       if (u.last) {
-        preview.textContent = u.last.deleted
-          ? "This message was deleted"
-          : (u.last.media_url ? "📷 Photo" + (u.last.text ? " " + u.last.text : "") : (u.last.text || ""));
+        preview.textContent = u.last.media_url ? "[img] " + (u.last.text || "") : (u.last.text || "");
       } else {
-        preview.textContent = "No messages yet";
+        preview.textContent = "no messages yet";
       }
 
       textWrap.appendChild(top); textWrap.appendChild(preview);
@@ -227,6 +262,13 @@
   function renderHeader(user) {
     const header = document.createElement("div");
     header.id = "chat-header";
+
+    const back = document.createElement("button");
+    back.id = "back-btn";
+    back.textContent = "←";
+    back.addEventListener("click", closeChat);
+    header.appendChild(back);
+
     const av = avatarEl(user);
     const info = document.createElement("div");
     info.id = "chat-header-info";
@@ -264,7 +306,9 @@
       row.className = "msg-row " + (m.direction === "outgoing" ? "out" : "in");
 
       const bubble = document.createElement("div");
-      bubble.className = "bubble " + (m.direction === "outgoing" ? "out" : "in") + (m.deleted ? " deleted" : "");
+      // Deleted messages render identically to normal ones — content shown,
+      // no tag, no styling difference. That's the whole point of the archive.
+      bubble.className = "bubble " + (m.direction === "outgoing" ? "out" : "in");
 
       if (m.media_url) {
         const img = document.createElement("img");
@@ -280,15 +324,8 @@
 
       const meta = document.createElement("div");
       meta.className = "bubble-meta";
-      if (m.deleted) {
-        const tag = document.createElement("span");
-        tag.className = "deleted-tag";
-        tag.textContent = "Deleted";
-        meta.appendChild(tag);
-      }
       if (m.edited_at) {
         const tag = document.createElement("span");
-        tag.className = "edited-tag";
         tag.textContent = "edited";
         meta.appendChild(tag);
       }
@@ -306,8 +343,19 @@
 
   let chatRefreshTimer = null;
 
+  function closeChat() {
+    currentUserId = null;
+    if (chatRefreshTimer) clearInterval(chatRefreshTimer);
+    document.getElementById("app").classList.remove("chat-open");
+    document.querySelectorAll(".chat-item").forEach(el => el.classList.remove("active"));
+  }
+
   async function openChat(userId) {
     currentUserId = userId;
+    openChatMessages = new Map();
+    openChatCursor = null;
+
+    document.getElementById("app").classList.add("chat-open");
     document.querySelectorAll(".chat-item").forEach(el => {
       el.classList.toggle("active", el.dataset.userId === userId);
     });
@@ -321,17 +369,33 @@
     msgsEl.id = "messages";
     pane.appendChild(msgsEl);
 
-    async function refresh() {
-      if (currentUserId !== userId) return; // user switched chats, stop
-      const msgs = await fetchMessages(userId);
-      renderMessages(msgsEl, msgs);
+    function applyDelta(msgs) {
+      let changed = false;
+      msgs.forEach(m => {
+        openChatMessages.set(m.message_id, m);
+        if (!openChatCursor || (m.updated_at && m.updated_at > openChatCursor)) {
+          openChatCursor = m.updated_at || openChatCursor;
+        }
+        changed = true;
+      });
+      if (changed) {
+        const sorted = Array.from(openChatMessages.values())
+          .sort((a, b) => new Date(a.sent_at) - new Date(b.sent_at));
+        renderMessages(msgsEl, sorted);
+      }
     }
 
-    await refresh();
+    async function refresh(initial) {
+      if (currentUserId !== userId) return; // user switched/closed chat, stop
+      const msgs = await fetchMessages(userId, initial ? null : openChatCursor);
+      applyDelta(msgs);
+    }
+
+    await refresh(true);
     msgsEl.scrollTop = msgsEl.scrollHeight;
 
     if (chatRefreshTimer) clearInterval(chatRefreshTimer);
-    chatRefreshTimer = setInterval(refresh, REFRESH_CHAT_MS);
+    chatRefreshTimer = setInterval(() => refresh(false), REFRESH_CHAT_MS);
   }
 
   async function refreshList() {
