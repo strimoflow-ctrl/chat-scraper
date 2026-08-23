@@ -3,8 +3,10 @@ import base64
 import json
 import logging
 import os
+import threading
 import time
 from datetime import datetime, timezone
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import requests
 import firebase_admin
@@ -16,6 +18,51 @@ from telethon.tl.functions.users import GetFullUserRequest
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("archiver")
+
+# Newer Python versions no longer auto-create an event loop on the main
+# thread. Telethon (older versions) expects one to already exist, so we
+# create and register it explicitly before the client is built.
+try:
+    LOOP = asyncio.get_event_loop()
+except RuntimeError:
+    LOOP = asyncio.new_event_loop()
+    asyncio.set_event_loop(LOOP)
+
+# ---------------- tiny status server (for UptimeRobot / health checks) ----------------
+START_TIME = datetime.now(timezone.utc)
+
+
+class StatusHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == "/status":
+            uptime = datetime.now(timezone.utc) - START_TIME
+            body = json.dumps(
+                {
+                    "status": "running",
+                    "started_at": START_TIME.isoformat(),
+                    "uptime_seconds": int(uptime.total_seconds()),
+                }
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(body)
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def log_message(self, format, *args):
+        pass  # keep Render logs clean, no per-request spam
+
+
+def run_status_server():
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(("0.0.0.0", port), StatusHandler)
+    log.info("Status server listening on port %s (/status)", port)
+    server.serve_forever()
+
+
+threading.Thread(target=run_status_server, daemon=True).start()
 
 # ---------------- CONFIG (set these as env vars on Render) ----------------
 API_ID = int(os.environ["API_ID"])
@@ -189,7 +236,7 @@ async def main():
 if __name__ == "__main__":
     while True:
         try:
-            client.loop.run_until_complete(main())
+            LOOP.run_until_complete(main())
         except KeyboardInterrupt:
             break
         except Exception as e:
