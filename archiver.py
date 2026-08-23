@@ -7,6 +7,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from urllib.parse import urlparse, parse_qs
 
 import requests
 import firebase_admin
@@ -28,28 +29,98 @@ except RuntimeError:
     LOOP = asyncio.new_event_loop()
     asyncio.set_event_loop(LOOP)
 
-# ---------------- tiny status server (for UptimeRobot / health checks) ----------------
+# ---------------- tiny web server: /status, /index (viewer UI), /api/* ----------------
 START_TIME = datetime.now(timezone.utc)
+INDEX_HTML_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "index.html")
+
+
+def _json_bytes(obj):
+    return json.dumps(obj, default=str).encode()
 
 
 class StatusHandler(BaseHTTPRequestHandler):
+    def _send_json(self, obj, status=200):
+        body = _json_bytes(obj)
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self):
-        if self.path == "/status":
+        parsed = urlparse(self.path)
+        path = parsed.path
+
+        if path == "/status":
             uptime = datetime.now(timezone.utc) - START_TIME
-            body = json.dumps(
+            self._send_json(
                 {
                     "status": "running",
                     "started_at": START_TIME.isoformat(),
                     "uptime_seconds": int(uptime.total_seconds()),
                 }
-            ).encode()
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(body)
-        else:
-            self.send_response(404)
-            self.end_headers()
+            )
+            return
+
+        if path in ("/", "/index", "/index.html"):
+            try:
+                with open(INDEX_HTML_PATH, "r", encoding="utf-8") as f:
+                    html = f.read()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(html.encode())
+            except FileNotFoundError:
+                self.send_response(500)
+                self.end_headers()
+                self.wfile.write(b"index.html not found next to archiver.py")
+            return
+
+        if path == "/api/users":
+            try:
+                users = []
+                for doc in db.collection("users").stream():
+                    u = doc.to_dict()
+                    u["id"] = doc.id
+                    last = None
+                    q = (
+                        db.collection("users")
+                        .document(doc.id)
+                        .collection("messages")
+                        .order_by("sent_at", direction=firestore.Query.DESCENDING)
+                        .limit(1)
+                        .get()
+                    )
+                    if q:
+                        last = q[0].to_dict()
+                    u["last"] = last
+                    users.append(u)
+                self._send_json(users)
+            except Exception as e:
+                self._send_json({"error": str(e)}, status=500)
+            return
+
+        if path == "/api/messages":
+            qs = parse_qs(parsed.query)
+            user_id = (qs.get("user_id") or [None])[0]
+            if not user_id:
+                self._send_json({"error": "user_id is required"}, status=400)
+                return
+            try:
+                msgs = [
+                    doc.to_dict()
+                    for doc in db.collection("users")
+                    .document(user_id)
+                    .collection("messages")
+                    .order_by("sent_at", direction=firestore.Query.ASCENDING)
+                    .stream()
+                ]
+                self._send_json(msgs)
+            except Exception as e:
+                self._send_json({"error": str(e)}, status=500)
+            return
+
+        self.send_response(404)
+        self.end_headers()
 
     def log_message(self, format, *args):
         pass  # keep Render logs clean, no per-request spam
@@ -58,11 +129,8 @@ class StatusHandler(BaseHTTPRequestHandler):
 def run_status_server():
     port = int(os.environ.get("PORT", 10000))
     server = HTTPServer(("0.0.0.0", port), StatusHandler)
-    log.info("Status server listening on port %s (/status)", port)
+    log.info("Web server listening on port %s (/status, /index, /api/*)", port)
     server.serve_forever()
-
-
-threading.Thread(target=run_status_server, daemon=True).start()
 
 # ---------------- CONFIG (set these as env vars on Render) ----------------
 API_ID = int(os.environ["API_ID"])
@@ -80,6 +148,10 @@ else:
     cred = credentials.Certificate(json.loads(FIREBASE_CRED))
 firebase_admin.initialize_app(cred)
 db = firestore.client()
+
+# Start the web server (status + viewer UI + API) only after `db` exists,
+# since /api/* routes read from it.
+threading.Thread(target=run_status_server, daemon=True).start()
 
 # message_id -> user_id. Needed because Telegram's delete event for private
 # chats only gives you the message IDs, not which chat they belonged to.
