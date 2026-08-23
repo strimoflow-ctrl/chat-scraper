@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Chat Archive</title>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<style>
+  :root {
+    --sidebar-bg: #17212b;
+    --sidebar-hover: #202b36;
+    --sidebar-active: #2b5278;
+    --chat-bg: #0e1621;
+    --header-bg: #17212b;
+    --bubble-in: #182533;
+    --bubble-out: #2b5278;
+    --bubble-out-deleted: #3a2b2e;
+    --bubble-in-deleted: #241b1c;
+    --text-primary: #e9edf1;
+    --text-secondary: #7d8b99;
+    --accent: #4ea4f5;
+    --divider: #0f1b26;
+    --danger: #e35a5a;
+    --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    height: 100%; margin: 0; padding: 0;
+    font-family: var(--font);
+    background: var(--chat-bg);
+    color: var(--text-primary);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ---------------- Login screen ---------------- */
+  #login-screen {
+    height: 100%; display: flex; align-items: center; justify-content: center;
+    background: var(--sidebar-bg);
+  }
+  #login-box {
+    width: 320px; background: var(--chat-bg); padding: 32px 28px;
+    border-radius: 12px; box-shadow: 0 10px 40px rgba(0,0,0,0.4);
+  }
+  #login-box h1 {
+    font-size: 20px; margin: 0 0 20px; text-align: center; font-weight: 600;
+  }
+  #login-box input {
+    width: 100%; padding: 11px 14px; margin-bottom: 12px;
+    background: #182533; border: 1px solid #223140; border-radius: 8px;
+    color: var(--text-primary); font-size: 14px; outline: none;
+  }
+  #login-box input:focus { border-color: var(--accent); }
+  #login-box button {
+    width: 100%; padding: 11px; border: none; border-radius: 8px;
+    background: var(--accent); color: #fff; font-size: 14px; font-weight: 600;
+    cursor: pointer; margin-top: 6px;
+  }
+  #login-box button:hover { background: #3b8ee0; }
+  #login-error { color: var(--danger); font-size: 13px; margin-top: 10px; text-align: center; min-height: 16px; }
+
+  /* ---------------- App shell ---------------- */
+  #app { display: none; height: 100%; }
+  #app.visible { display: flex; }
+
+  #sidebar {
+    width: 380px; min-width: 320px; background: var(--sidebar-bg);
+    display: flex; flex-direction: column; border-right: 1px solid var(--divider);
+  }
+  #sidebar-search {
+    padding: 12px; border-bottom: 1px solid var(--divider);
+  }
+  #sidebar-search input {
+    width: 100%; padding: 9px 14px; border-radius: 20px; border: none;
+    background: #202b36; color: var(--text-primary); font-size: 14px; outline: none;
+  }
+  #chat-list { flex: 1; overflow-y: auto; }
+  .chat-item {
+    display: flex; align-items: center; padding: 10px 14px; cursor: pointer;
+    border-bottom: 1px solid rgba(255,255,255,0.02);
+  }
+  .chat-item:hover { background: var(--sidebar-hover); }
+  .chat-item.active { background: var(--sidebar-active); }
+  .avatar {
+    width: 50px; height: 50px; border-radius: 50%; object-fit: cover;
+    background: linear-gradient(135deg, #5288c1, #2b5278);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 18px; font-weight: 600; color: #fff; flex-shrink: 0;
+  }
+  .avatar-sm { width: 36px; height: 36px; font-size: 14px; }
+  .chat-item-text { margin-left: 12px; overflow: hidden; flex: 1; }
+  .chat-item-top { display: flex; justify-content: space-between; align-items: baseline; }
+  .chat-item-name { font-size: 15px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .chat-item-time { font-size: 12px; color: var(--text-secondary); flex-shrink: 0; margin-left: 8px; }
+  .chat-item-preview { font-size: 13px; color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px; }
+  .chat-item-preview.deleted { color: var(--danger); font-style: italic; }
+
+  #chat-pane { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  #chat-header {
+    display: flex; align-items: center; padding: 10px 20px; background: var(--header-bg);
+    border-bottom: 1px solid var(--divider); min-height: 64px;
+  }
+  #chat-header .avatar { width: 42px; height: 42px; font-size: 15px; }
+  #chat-header-info { margin-left: 14px; overflow: hidden; }
+  #chat-header-name { font-size: 16px; font-weight: 600; }
+  #chat-header-sub { font-size: 13px; color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 480px; }
+
+  #messages {
+    flex: 1; overflow-y: auto; padding: 20px 8%;
+    background-image: radial-gradient(circle at 25% 15%, rgba(255,255,255,0.015) 0, transparent 40%),
+                       radial-gradient(circle at 75% 85%, rgba(255,255,255,0.015) 0, transparent 40%);
+  }
+  .msg-row { display: flex; margin-bottom: 6px; }
+  .msg-row.out { justify-content: flex-end; }
+  .bubble {
+    max-width: 60%; padding: 8px 12px 6px; border-radius: 12px; font-size: 14.5px;
+    line-height: 1.4; position: relative; word-wrap: break-word;
+  }
+  .msg-row.in .bubble { background: var(--bubble-in); border-top-left-radius: 3px; }
+  .msg-row.out .bubble { background: var(--bubble-out); border-top-right-radius: 3px; }
+  .bubble.deleted.in { background: var(--bubble-in-deleted); }
+  .bubble.deleted.out { background: var(--bubble-out-deleted); }
+  .bubble img { max-width: 100%; border-radius: 8px; margin-bottom: 4px; display: block; }
+  .bubble-text { white-space: pre-wrap; }
+  .bubble-meta { display: flex; gap: 6px; justify-content: flex-end; margin-top: 3px; font-size: 11px; color: rgba(255,255,255,0.5); }
+  .deleted-tag { color: var(--danger); font-weight: 600; }
+  .edited-tag { font-style: italic; }
+
+  #empty-state {
+    flex: 1; display: flex; align-items: center; justify-content: center;
+    color: var(--text-secondary); font-size: 15px;
+  }
+  ::-webkit-scrollbar { width: 8px; }
+  ::-webkit-scrollbar-thumb { background: #22303c; border-radius: 4px; }
+</style>
+</head>
+<body>
+
+<div id="login-screen">
+  <div id="login-box">
+    <h1>Chat Archive</h1>
+    <input type="email" id="login-email" placeholder="Email" autocomplete="username" />
+    <input type="password" id="login-password" placeholder="Password" autocomplete="current-password" />
+    <button id="login-btn">Sign in</button>
+    <div id="login-error"></div>
+  </div>
+</div>
+
+<div id="app">
+  <div id="sidebar">
+    <div id="sidebar-search"><input type="text" id="search-input" placeholder="Search"></div>
+    <div id="chat-list"></div>
+  </div>
+  <div id="chat-pane">
+    <div id="empty-state">Select a chat to view messages</div>
+  </div>
+</div>
+
+<script>
+  // ---- FILL THIS IN: Firebase console -> Project settings -> General ->
+  // "Your apps" -> Web app -> SDK setup and configuration. This is the
+  // PUBLIC web config, not the service-account JSON used by archiver.py.
+  const firebaseConfig = {
+    apiKey: "YOUR_API_KEY",
+    authDomain: "YOUR_PROJECT.firebaseapp.com",
+    projectId: "YOUR_PROJECT_ID",
+    storageBucket: "YOUR_PROJECT.appspot.com",
+    messagingSenderId: "YOUR_SENDER_ID",
+    appId: "YOUR_APP_ID"
+  };
+
+  firebase.initializeApp(firebaseConfig);
+  const auth = firebase.auth();
+  const db = firebase.firestore();
+
+  // ---------------- Auth ----------------
+  document.getElementById("login-btn").addEventListener("click", login);
+  document.getElementById("login-password").addEventListener("keydown", e => { if (e.key === "Enter") login(); });
+
+  function login() {
+    const email = document.getElementById("login-email").value.trim();
+    const pass = document.getElementById("login-password").value;
+    const errEl = document.getElementById("login-error");
+    errEl.textContent = "";
+    auth.signInWithEmailAndPassword(email, pass).catch(err => {
+      errEl.textContent = "Sign in failed — check email/password.";
+    });
+  }
+
+  auth.onAuthStateChanged(user => {
+    if (user) {
+      document.getElementById("login-screen").style.display = "none";
+      document.getElementById("app").classList.add("visible");
+      loadChatList();
+    } else {
+      document.getElementById("login-screen").style.display = "flex";
+      document.getElementById("app").classList.remove("visible");
+    }
+  });
+
+  // ---------------- Helpers ----------------
+  function initials(name) {
+    if (!name) return "?";
+    return name.trim().charAt(0).toUpperCase();
+  }
+
+  function avatarEl(user, sizeClass) {
+    const div = document.createElement("div");
+    div.className = "avatar" + (sizeClass ? " " + sizeClass : "");
+    if (user.dp_url) {
+      const img = document.createElement("img");
+      img.src = user.dp_url;
+      img.style.width = "100%"; img.style.height = "100%";
+      img.style.borderRadius = "50%"; img.style.objectFit = "cover";
+      div.appendChild(img);
+    } else {
+      div.textContent = initials(user.first_name || user.username);
+    }
+    return div;
+  }
+
+  function fmtTime(iso) {
+    if (!iso) return "";
+    const d = new Date(iso);
+    return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  }
+  function fmtDay(iso) {
+    if (!iso) return "";
+    return new Date(iso).toLocaleDateString([], { day: "2-digit", month: "short" });
+  }
+
+  let currentUserId = null;
+  let messagesUnsub = null;
+  const usersCache = {};
+
+  // ---------------- Sidebar ----------------
+  function loadChatList() {
+    db.collection("users").onSnapshot(async snap => {
+      const list = document.getElementById("chat-list");
+      list.innerHTML = "";
+      const users = [];
+      snap.forEach(doc => users.push({ id: doc.id, ...doc.data() }));
+
+      // fetch last message per user for preview + sort
+      const withLast = await Promise.all(users.map(async u => {
+        usersCache[u.id] = u;
+        let last = null;
+        try {
+          const q = await db.collection("users").doc(u.id).collection("messages")
+            .orderBy("sent_at", "desc").limit(1).get();
+          if (!q.empty) last = q.docs[0].data();
+        } catch (e) { /* no messages yet */ }
+        return { ...u, _last: last };
+      }));
+
+      withLast.sort((a, b) => {
+        const ta = a._last ? new Date(a._last.sent_at).getTime() : 0;
+        const tb = b._last ? new Date(b._last.sent_at).getTime() : 0;
+        return tb - ta;
+      });
+
+      withLast.forEach(u => {
+        const item = document.createElement("div");
+        item.className = "chat-item" + (u.id === currentUserId ? " active" : "");
+        item.dataset.userId = u.id;
+
+        const av = avatarEl(u);
+        const textWrap = document.createElement("div");
+        textWrap.className = "chat-item-text";
+
+        const top = document.createElement("div");
+        top.className = "chat-item-top";
+        const nameEl = document.createElement("div");
+        nameEl.className = "chat-item-name";
+        nameEl.textContent = [u.first_name, u.last_name].filter(Boolean).join(" ") || u.username || u.id;
+        const timeEl = document.createElement("div");
+        timeEl.className = "chat-item-time";
+        timeEl.textContent = u._last ? fmtTime(u._last.sent_at) : "";
+        top.appendChild(nameEl); top.appendChild(timeEl);
+
+        const preview = document.createElement("div");
+        preview.className = "chat-item-preview" + (u._last && u._last.deleted ? " deleted" : "");
+        if (u._last) {
+          preview.textContent = u._last.deleted
+            ? "This message was deleted"
+            : (u._last.media_url ? "📷 Photo" + (u._last.text ? " " + u._last.text : "") : (u._last.text || ""));
+        } else {
+          preview.textContent = "No messages yet";
+        }
+
+        textWrap.appendChild(top); textWrap.appendChild(preview);
+        item.appendChild(av); item.appendChild(textWrap);
+        item.addEventListener("click", () => openChat(u.id));
+        list.appendChild(item);
+      });
+
+      applySearchFilter();
+    });
+  }
+
+  document.getElementById("search-input").addEventListener("input", applySearchFilter);
+  function applySearchFilter() {
+    const q = document.getElementById("search-input").value.toLowerCase();
+    document.querySelectorAll(".chat-item").forEach(item => {
+      const name = item.querySelector(".chat-item-name").textContent.toLowerCase();
+      item.style.display = name.includes(q) ? "" : "none";
+    });
+  }
+
+  // ---------------- Chat pane ----------------
+  function openChat(userId) {
+    currentUserId = userId;
+    document.querySelectorAll(".chat-item").forEach(el => {
+      el.classList.toggle("active", el.dataset.userId === userId);
+    });
+
+    const user = usersCache[userId] || {};
+    const pane = document.getElementById("chat-pane");
+    pane.innerHTML = "";
+
+    const header = document.createElement("div");
+    header.id = "chat-header";
+    const av = avatarEl(user);
+    const info = document.createElement("div");
+    info.id = "chat-header-info";
+    const nameEl = document.createElement("div");
+    nameEl.id = "chat-header-name";
+    nameEl.textContent = [user.first_name, user.last_name].filter(Boolean).join(" ") || user.username || userId;
+    const subEl = document.createElement("div");
+    subEl.id = "chat-header-sub";
+    const subParts = [];
+    if (user.username) subParts.push("@" + user.username);
+    if (user.phone) subParts.push("+" + user.phone);
+    if (user.bio) subParts.push(user.bio);
+    subEl.textContent = subParts.join(" · ");
+    info.appendChild(nameEl); info.appendChild(subEl);
+    header.appendChild(av); header.appendChild(info);
+
+    const msgsEl = document.createElement("div");
+    msgsEl.id = "messages";
+
+    pane.appendChild(header);
+    pane.appendChild(msgsEl);
+
+    if (messagesUnsub) messagesUnsub();
+    messagesUnsub = db.collection("users").doc(userId).collection("messages")
+      .orderBy("sent_at", "asc")
+      .onSnapshot(snap => {
+        msgsEl.innerHTML = "";
+        let lastDay = null;
+        snap.forEach(doc => {
+          const m = doc.data();
+          const day = fmtDay(m.sent_at);
+          if (day !== lastDay) {
+            const divider = document.createElement("div");
+            divider.style.textAlign = "center";
+            divider.style.color = "var(--text-secondary)";
+            divider.style.fontSize = "12px";
+            divider.style.margin = "14px 0";
+            divider.textContent = day;
+            msgsEl.appendChild(divider);
+            lastDay = day;
+          }
+
+          const row = document.createElement("div");
+          row.className = "msg-row " + (m.direction === "outgoing" ? "out" : "in");
+
+          const bubble = document.createElement("div");
+          bubble.className = "bubble " + (m.direction === "outgoing" ? "out" : "in") + (m.deleted ? " deleted" : "");
+
+          if (m.media_url) {
+            const img = document.createElement("img");
+            img.src = m.media_url;
+            bubble.appendChild(img);
+          }
+          if (m.text) {
+            const txt = document.createElement("div");
+            txt.className = "bubble-text";
+            txt.textContent = m.text;
+            bubble.appendChild(txt);
+          }
+
+          const meta = document.createElement("div");
+          meta.className = "bubble-meta";
+          if (m.deleted) {
+            const tag = document.createElement("span");
+            tag.className = "deleted-tag";
+            tag.textContent = "Deleted";
+            meta.appendChild(tag);
+          }
+          if (m.edited_at) {
+            const tag = document.createElement("span");
+            tag.className = "edited-tag";
+            tag.textContent = "edited";
+            meta.appendChild(tag);
+          }
+          const time = document.createElement("span");
+          time.textContent = fmtTime(m.sent_at);
+          meta.appendChild(time);
+          bubble.appendChild(meta);
+
+          row.appendChild(bubble);
+          msgsEl.appendChild(row);
+        });
+        msgsEl.scrollTop = msgsEl.scrollHeight;
+      });
+  }
+</script>
+</body>
+</html>
