@@ -5,8 +5,9 @@ import logging
 import os
 import threading
 import time
+import traceback
 from datetime import datetime, timezone
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
 import requests
@@ -81,41 +82,38 @@ class StatusHandler(BaseHTTPRequestHandler):
                 for doc in db.collection("users").stream():
                     u = doc.to_dict()
                     u["id"] = doc.id
-                    last = None
-                    q = (
-                        db.collection("users")
-                        .document(doc.id)
-                        .collection("messages")
-                        .order_by("sent_at", direction=firestore.Query.DESCENDING)
-                        .limit(1)
-                        .get()
-                    )
-                    if q:
-                        last = q[0].to_dict()
-                    u["last"] = last
+                    u["last"] = u.pop("last_message", None)  # already cached, no extra query
                     users.append(u)
                 self._send_json(users)
             except Exception as e:
+                log.error("/api/users failed:\n%s", traceback.format_exc())
                 self._send_json({"error": str(e)}, status=500)
             return
 
         if path == "/api/messages":
             qs = parse_qs(parsed.query)
             user_id = (qs.get("user_id") or [None])[0]
+            after = (qs.get("after") or [None])[0]
             if not user_id:
                 self._send_json({"error": "user_id is required"}, status=400)
                 return
             try:
-                msgs = [
-                    doc.to_dict()
-                    for doc in db.collection("users")
-                    .document(user_id)
-                    .collection("messages")
-                    .order_by("sent_at", direction=firestore.Query.ASCENDING)
-                    .stream()
-                ]
+                col = db.collection("users").document(user_id).collection("messages")
+                if after:
+                    # Incremental poll: only messages created/edited/deleted
+                    # since the client's last known "updated_at" cursor.
+                    # This is what keeps repeated polling cheap on reads —
+                    # a poll with nothing new returns (and charges for) zero
+                    # documents instead of the whole conversation again.
+                    query = col.where("updated_at", ">", after).order_by(
+                        "updated_at", direction=firestore.Query.ASCENDING
+                    )
+                else:
+                    query = col.order_by("sent_at", direction=firestore.Query.ASCENDING)
+                msgs = [doc.to_dict() for doc in query.stream()]
                 self._send_json(msgs)
             except Exception as e:
+                log.error("/api/messages failed:\n%s", traceback.format_exc())
                 self._send_json({"error": str(e)}, status=500)
             return
 
@@ -128,7 +126,9 @@ class StatusHandler(BaseHTTPRequestHandler):
 
 def run_status_server():
     port = int(os.environ.get("PORT", 10000))
-    server = HTTPServer(("0.0.0.0", port), StatusHandler)
+    # ThreadingHTTPServer so a slow request (or Telethon doing work on the
+    # main thread) can't make /status or /api/* calls queue up behind it.
+    server = ThreadingHTTPServer(("0.0.0.0", port), StatusHandler)
     log.info("Web server listening on port %s (/status, /index, /api/*)", port)
     server.serve_forever()
 
@@ -159,6 +159,11 @@ threading.Thread(target=run_status_server, daemon=True).start()
 # later delete event can be traced back to the right user.
 MSG_TO_USER = {}
 
+# user_id -> unix timestamp of last full profile sync (bio/dp/etc). Keeps us
+# from re-downloading + re-uploading the profile photo on every single message.
+PROFILE_SYNCED_AT = {}
+PROFILE_SYNC_COOLDOWN = 6 * 60 * 60  # 6 hours
+
 client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 
 
@@ -180,8 +185,21 @@ def upload_to_imgbb(file_bytes: bytes) -> str | None:
         return None
 
 
-async def sync_user_profile(user: User):
-    """Refreshes username/name/phone/bio/dp for this user in Firestore."""
+async def sync_user_profile(user: User, force: bool = False):
+    """Refreshes username/name/phone/bio/dp for this user in Firestore.
+
+    Profile info rarely changes message-to-message, so we only actually hit
+    Telegram + imgbb + Firestore for this at most once per PROFILE_SYNC_COOLDOWN
+    per user — otherwise every single message would trigger a full profile
+    re-fetch and re-upload, burning through reads/writes and imgbb calls for
+    no reason.
+    """
+    now = time.time()
+    last_synced = PROFILE_SYNCED_AT.get(user.id, 0)
+    if not force and (now - last_synced) < PROFILE_SYNC_COOLDOWN:
+        return
+    PROFILE_SYNCED_AT[user.id] = now
+
     bio = None
     try:
         full = await client(GetFullUserRequest(user.id))
@@ -229,20 +247,38 @@ async def save_message(event, peer: User):
         except Exception as e:
             log.error("media download failed: %s", e)
 
+    now_iso = datetime.now(timezone.utc).isoformat()
+    text = msg.raw_text or ""
     data = {
         "message_id": msg.id,
-        "text": msg.raw_text or "",
+        "text": text,
         "media_url": media_url,
         "sent_at": msg.date.isoformat() if msg.date else None,
         "edited_at": None,
         "deleted": False,
         "deleted_at": None,
         "direction": "outgoing" if msg.out else "incoming",
+        "updated_at": now_iso,
     }
 
     db.collection("users").document(str(user_id)).collection("messages").document(
         str(msg.id)
     ).set(data, merge=True)
+
+    # Cache a preview of the latest message directly on the user doc, so the
+    # sidebar (/api/users) doesn't need one extra query per user just to
+    # show "last message" — that alone roughly doubles read cost otherwise.
+    db.collection("users").document(str(user_id)).set(
+        {
+            "last_message": {
+                "text": text,
+                "media_url": media_url,
+                "sent_at": data["sent_at"],
+                "deleted": False,
+            }
+        },
+        merge=True,
+    )
 
     await sync_user_profile(peer)
 
@@ -270,13 +306,16 @@ async def on_edit(event):
 
     msg = event.message
     MSG_TO_USER[msg.id] = peer.id
+    now_iso = datetime.now(timezone.utc).isoformat()
+    text = msg.raw_text or ""
 
     db.collection("users").document(str(peer.id)).collection("messages").document(
         str(msg.id)
     ).set(
         {
-            "text": msg.raw_text or "",
-            "edited_at": datetime.now(timezone.utc).isoformat(),
+            "text": text,
+            "edited_at": now_iso,
+            "updated_at": now_iso,
         },
         merge=True,
     )
@@ -284,6 +323,7 @@ async def on_edit(event):
 
 @client.on(events.MessageDeleted)
 async def on_delete(event):
+    now_iso = datetime.now(timezone.utc).isoformat()
     for msg_id in event.deleted_ids:
         user_id = MSG_TO_USER.get(msg_id)
         if user_id is None:
@@ -295,7 +335,8 @@ async def on_delete(event):
         ).set(
             {
                 "deleted": True,
-                "deleted_at": datetime.now(timezone.utc).isoformat(),
+                "deleted_at": now_iso,
+                "updated_at": now_iso,
             },
             merge=True,
         )
