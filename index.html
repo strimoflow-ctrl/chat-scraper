@@ -205,10 +205,11 @@
     }
   }
 
-  async function fetchMessages(userId, after) {
+  async function fetchMessages(userId, params) {
     try {
       let url = "/api/messages?user_id=" + encodeURIComponent(userId);
-      if (after) url += "&after=" + encodeURIComponent(after);
+      if (params && params.after) url += "&after=" + encodeURIComponent(params.after);
+      if (params && params.before) url += "&before=" + encodeURIComponent(params.before);
       const res = await fetch(url);
       return await res.json();
     } catch (e) {
@@ -358,6 +359,8 @@
   }
 
   let chatRefreshTimer = null;
+  let loadingOlder = false;
+  let noMoreOlder = false;
 
   function closeChat() {
     currentUserId = null;
@@ -370,6 +373,8 @@
     currentUserId = userId;
     openChatMessages = new Map();
     openChatCursor = null;
+    loadingOlder = false;
+    noMoreOlder = false;
 
     document.getElementById("app").classList.add("chat-open");
     document.querySelectorAll(".chat-item").forEach(el => {
@@ -385,27 +390,51 @@
     msgsEl.id = "messages";
     pane.appendChild(msgsEl);
 
+    function sortedMessages() {
+      return Array.from(openChatMessages.values())
+        .sort((a, b) => new Date(a.sent_at) - new Date(b.sent_at));
+    }
+
     function applyDelta(msgs) {
-      let changed = false;
       msgs.forEach(m => {
         openChatMessages.set(m.message_id, m);
         if (!openChatCursor || (m.updated_at && m.updated_at > openChatCursor)) {
           openChatCursor = m.updated_at || openChatCursor;
         }
-        changed = true;
       });
-      if (changed) {
-        const sorted = Array.from(openChatMessages.values())
-          .sort((a, b) => new Date(a.sent_at) - new Date(b.sent_at));
-        renderMessages(msgsEl, sorted);
-      }
     }
 
     async function refresh(initial) {
       if (currentUserId !== userId) return; // user switched/closed chat, stop
-      const msgs = await fetchMessages(userId, initial ? null : openChatCursor);
-      applyDelta(msgs);
+      const msgs = await fetchMessages(userId, initial ? null : { after: openChatCursor });
+      if (msgs.length) {
+        applyDelta(msgs);
+        renderMessages(msgsEl, sortedMessages());
+      }
     }
+
+    async function loadOlder() {
+      if (loadingOlder || noMoreOlder || currentUserId !== userId) return;
+      const current = sortedMessages();
+      if (!current.length) return;
+      loadingOlder = true;
+      const oldest = current[0].sent_at;
+      const older = await fetchMessages(userId, { before: oldest });
+      if (older.length === 0) {
+        noMoreOlder = true;
+      } else {
+        older.forEach(m => openChatMessages.set(m.message_id, m));
+        const prevScrollHeight = msgsEl.scrollHeight;
+        const prevScrollTop = msgsEl.scrollTop;
+        renderMessages(msgsEl, sortedMessages(), { keepScroll: true });
+        msgsEl.scrollTop = msgsEl.scrollHeight - prevScrollHeight + prevScrollTop;
+      }
+      loadingOlder = false;
+    }
+
+    msgsEl.addEventListener("scroll", () => {
+      if (msgsEl.scrollTop < 60) loadOlder();
+    });
 
     await refresh(true);
     msgsEl.scrollTop = msgsEl.scrollHeight;
