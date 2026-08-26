@@ -33,6 +33,7 @@ except RuntimeError:
 # ---------------- tiny web server: /status, /index (viewer UI), /api/* ----------------
 START_TIME = datetime.now(timezone.utc)
 INDEX_HTML_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "index.html")
+PAGE_SIZE = 50  # messages per page: initial load and each "load older" scroll
 
 
 def _json_bytes(obj):
@@ -94,23 +95,45 @@ class StatusHandler(BaseHTTPRequestHandler):
             qs = parse_qs(parsed.query)
             user_id = (qs.get("user_id") or [None])[0]
             after = (qs.get("after") or [None])[0]
+            before = (qs.get("before") or [None])[0]
             if not user_id:
                 self._send_json({"error": "user_id is required"}, status=400)
                 return
             try:
                 col = db.collection("users").document(user_id).collection("messages")
+
                 if after:
-                    # Incremental poll: only messages created/edited/deleted
-                    # since the client's last known "updated_at" cursor.
-                    # This is what keeps repeated polling cheap on reads —
-                    # a poll with nothing new returns (and charges for) zero
-                    # documents instead of the whole conversation again.
+                    # Incremental poll on an already-open chat: only messages
+                    # created/edited/deleted since the client's last known
+                    # "updated_at" cursor. A poll with nothing new returns
+                    # (and charges for) zero documents.
                     query = col.where("updated_at", ">", after).order_by(
                         "updated_at", direction=firestore.Query.ASCENDING
                     )
+                    msgs = [doc.to_dict() for doc in query.stream()]
+
+                elif before:
+                    # Scrolled up for older history: one page of messages
+                    # strictly older than the oldest one currently shown.
+                    query = (
+                        col.where("sent_at", "<", before)
+                        .order_by("sent_at", direction=firestore.Query.DESCENDING)
+                        .limit(PAGE_SIZE)
+                    )
+                    msgs = [doc.to_dict() for doc in query.stream()]
+                    msgs.reverse()
+
                 else:
-                    query = col.order_by("sent_at", direction=firestore.Query.ASCENDING)
-                msgs = [doc.to_dict() for doc in query.stream()]
+                    # First open of a chat: only the most recent PAGE_SIZE
+                    # messages, not the whole history. Older ones load on
+                    # scroll-up via `before` above — they're still safely in
+                    # Firestore either way, just not pulled unless asked for.
+                    query = col.order_by(
+                        "sent_at", direction=firestore.Query.DESCENDING
+                    ).limit(PAGE_SIZE)
+                    msgs = [doc.to_dict() for doc in query.stream()]
+                    msgs.reverse()
+
                 self._send_json(msgs)
             except Exception as e:
                 log.error("/api/messages failed:\n%s", traceback.format_exc())
