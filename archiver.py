@@ -48,6 +48,15 @@ class StatusHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def do_HEAD(self):
+        # Uptime monitors (UptimeRobot, etc.) send HEAD requests by default.
+        # BaseHTTPRequestHandler returns 501 for any method without a
+        # handler, which made every uptime check fail with "501 Not
+        # Implemented" even though the service was perfectly healthy.
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+
     def do_GET(self):
         parsed = urlparse(self.path)
         path = parsed.path
@@ -189,6 +198,23 @@ PROFILE_SYNC_COOLDOWN = 6 * 60 * 60  # 6 hours
 
 client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 
+MAX_MEDIA_BYTES = 15 * 1024 * 1024  # 15 MB — bigger files (esp. videos) risk OOM-crashing
+# the whole process on Render's free-tier RAM limit, which then drops the
+# Telegram connection and can miss messages until it restarts.
+
+
+async def safe_download_media(msg):
+    """Downloads media only if it's under MAX_MEDIA_BYTES, to avoid OOM crashes."""
+    try:
+        size = getattr(msg.file, "size", None)
+        if size and size > MAX_MEDIA_BYTES:
+            log.warning("Skipping media download: %s bytes exceeds limit", size)
+            return None
+        return await client.download_media(msg, file=bytes)
+    except Exception as e:
+        log.error("media download failed: %s", e)
+        return None
+
 
 def upload_to_imgbb(file_bytes: bytes) -> str | None:
     """Uploads raw bytes to imgbb and returns the public URL, or None on failure."""
@@ -263,12 +289,9 @@ async def save_message(event, peer: User):
 
     media_url = None
     if msg.media:
-        try:
-            file_bytes = await client.download_media(msg, file=bytes)
-            if file_bytes:
-                media_url = upload_to_imgbb(file_bytes)
-        except Exception as e:
-            log.error("media download failed: %s", e)
+        file_bytes = await safe_download_media(msg)
+        if file_bytes:
+            media_url = upload_to_imgbb(file_bytes)
 
     now_iso = datetime.now(timezone.utc).isoformat()
     text = msg.raw_text or ""
@@ -369,6 +392,14 @@ async def main():
     await client.start()
     me = await client.get_me()
     log.info("Archiver running as %s (id=%s)", me.username or me.first_name, me.id)
+    # Recovers any messages/edits/deletes that happened while we were
+    # disconnected (crash, redeploy, network drop) — without this, a gap in
+    # connection silently loses whatever came in during that window.
+    try:
+        await client.catch_up()
+        log.info("Caught up on missed updates.")
+    except Exception as e:
+        log.warning("catch_up failed (continuing anyway): %s", e)
     await client.run_until_disconnected()
 
 
@@ -379,5 +410,5 @@ if __name__ == "__main__":
         except KeyboardInterrupt:
             break
         except Exception as e:
-            log.error("Crashed, restarting in 5s: %s", e)
+            log.error("Crashed, restarting in 5s:\n%s", traceback.format_exc())
             time.sleep(5)
