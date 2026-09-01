@@ -14,8 +14,10 @@
     --green: #33ff66;
     --green-dim: #1f9c3f;
     --green-faint: #4d7a58;
-    --bubble-in: #10160f;
+    --bubble-in: #2a1414;
     --bubble-out: #10240f;
+    --border-in: #4a1f1f;
+    --accent-in: #ff5c5c;
     --text: #c9f5d1;
     --font: 'JetBrains Mono', 'Fira Code', 'Courier New', ui-monospace, monospace;
   }
@@ -116,11 +118,58 @@
     line-height: 1.45; word-wrap: break-word; border: 1px solid var(--border);
     transition: border-color 0.15s ease;
   }
-  .msg-row.in .bubble { background: var(--bubble-in); border-left: 2px solid var(--green-dim); }
+  .msg-row.in .bubble { background: var(--bubble-in); border-left: 2px solid var(--accent-in); border-color: var(--border-in); }
   .msg-row.out .bubble { background: var(--bubble-out); border-right: 2px solid var(--green); }
   .bubble img { max-width: 100%; border-radius: 2px; margin-bottom: 4px; display: block; border: 1px solid var(--border); }
   .bubble-text { white-space: pre-wrap; color: var(--text); }
+  .reply-preview {
+    border-left: 3px solid var(--green); padding: 4px 8px; margin-bottom: 6px;
+    background: rgba(255,255,255,0.03); border-radius: 2px; font-size: 12.5px;
+    color: var(--green-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    cursor: pointer;
+  }
+  .msg-row.in .reply-preview { border-left-color: var(--accent-in); }
   .bubble-meta { display: flex; gap: 6px; justify-content: flex-end; margin-top: 3px; font-size: 10.5px; color: var(--green-faint); }
+
+  /* ---------------- Profile panel ---------------- */
+  #profile-overlay {
+    display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+    z-index: 50; align-items: center; justify-content: center;
+  }
+  #profile-overlay.visible { display: flex; }
+  #profile-panel {
+    width: 420px; max-width: 92vw; max-height: 86vh; overflow-y: auto;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 4px;
+    padding: 22px; position: relative;
+  }
+  #profile-close {
+    position: absolute; top: 14px; right: 16px; background: none; border: none;
+    color: var(--green-faint); font-size: 16px; cursor: pointer; font-family: var(--font);
+  }
+  #profile-close:hover { color: var(--green); }
+  #profile-avatar-wrap { display: flex; flex-direction: column; align-items: center; margin-bottom: 14px; }
+  #profile-avatar-wrap .avatar {
+    width: 96px; height: 96px; font-size: 32px; border-radius: 4px; margin-bottom: 10px;
+  }
+  #profile-name { font-size: 17px; font-weight: 600; color: var(--text); }
+  #profile-sub { font-size: 12.5px; color: var(--green-faint); text-align: center; margin-top: 4px; }
+  .profile-section-title {
+    font-size: 11px; color: var(--green-dim); letter-spacing: 1px; margin: 18px 0 8px;
+    text-transform: uppercase; border-bottom: 1px solid var(--border); padding-bottom: 6px;
+  }
+  #dp-history-row { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px; }
+  #dp-history-row .avatar { width: 52px; height: 52px; font-size: 16px; flex-shrink: 0; }
+  #dp-history-row .dp-item { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+  #dp-history-row .dp-date { font-size: 9.5px; color: var(--green-faint); }
+  #media-gallery-grid {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px;
+  }
+  #media-gallery-grid img {
+    width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 2px;
+    border: 1px solid var(--border); cursor: pointer;
+  }
+  #chat-header-info { cursor: pointer; }
+  .empty-note { color: var(--green-faint); font-size: 12.5px; }
 
   #empty-state {
     flex: 1; display: flex; align-items: center; justify-content: center;
@@ -158,6 +207,17 @@
   </div>
   <div id="chat-pane">
     <div id="empty-state">select a chat to view messages</div>
+  </div>
+</div>
+
+<div id="profile-overlay">
+  <div id="profile-panel">
+    <button id="profile-close">✕ close</button>
+    <div id="profile-avatar-wrap"></div>
+    <div class="profile-section-title">dp_history</div>
+    <div id="dp-history-row"></div>
+    <div class="profile-section-title">media_gallery</div>
+    <div id="media-gallery-grid"></div>
   </div>
 </div>
 
@@ -300,9 +360,87 @@
     if (user.bio) subParts.push(user.bio);
     subEl.textContent = subParts.join(" · ");
     info.appendChild(nameEl); info.appendChild(subEl);
+    info.addEventListener("click", () => openProfile(user.id));
+    av.style.cursor = "pointer";
+    av.addEventListener("click", () => openProfile(user.id));
     header.appendChild(av); header.appendChild(info);
     return header;
   }
+
+  function fmtDateShort(iso) {
+    if (!iso) return "";
+    return new Date(iso).toLocaleDateString([], { day: "2-digit", month: "short", year: "2-digit" });
+  }
+
+  function openProfile(userId) {
+    const user = usersCache[userId] || { id: userId };
+    document.getElementById("profile-overlay").classList.add("visible");
+
+    const avatarWrap = document.getElementById("profile-avatar-wrap");
+    avatarWrap.innerHTML = "";
+    avatarWrap.appendChild(avatarEl(user));
+    const nameEl = document.createElement("div");
+    nameEl.id = "profile-name";
+    nameEl.textContent = [user.first_name, user.last_name].filter(Boolean).join(" ") || user.username || user.id;
+    const subEl = document.createElement("div");
+    subEl.id = "profile-sub";
+    const subParts = [];
+    if (user.username) subParts.push("@" + user.username);
+    if (user.phone) subParts.push("+" + user.phone);
+    if (user.bio) subParts.push(user.bio);
+    subEl.textContent = subParts.join(" · ");
+    avatarWrap.appendChild(nameEl);
+    avatarWrap.appendChild(subEl);
+
+    const dpRow = document.getElementById("dp-history-row");
+    dpRow.innerHTML = "";
+    const history = (user.dp_history || []).slice().reverse();
+    if (user.dp_url) {
+      history.unshift({ url: user.dp_url, changed_at: user.profile_updated_at, current: true });
+    }
+    if (!history.length) {
+      dpRow.innerHTML = '<div class="empty-note">no profile photo seen yet</div>';
+    } else {
+      history.forEach(h => {
+        const item = document.createElement("div");
+        item.className = "dp-item";
+        const av = document.createElement("div");
+        av.className = "avatar";
+        const img = document.createElement("img");
+        img.src = h.url;
+        img.style.width = "100%"; img.style.height = "100%"; img.style.objectFit = "cover";
+        av.appendChild(img);
+        const date = document.createElement("div");
+        date.className = "dp-date";
+        date.textContent = h.current ? "current" : fmtDateShort(h.changed_at);
+        item.appendChild(av); item.appendChild(date);
+        dpRow.appendChild(item);
+      });
+    }
+
+    const gallery = document.getElementById("media-gallery-grid");
+    gallery.innerHTML = "";
+    const items = (user.media_gallery || []).slice().reverse();
+    if (!items.length) {
+      gallery.innerHTML = '<div class="empty-note">no media yet</div>';
+    } else {
+      items.forEach(m => {
+        const img = document.createElement("img");
+        img.src = m.url;
+        img.addEventListener("click", () => window.open(m.url, "_blank"));
+        gallery.appendChild(img);
+      });
+    }
+  }
+
+  document.getElementById("profile-close").addEventListener("click", () => {
+    document.getElementById("profile-overlay").classList.remove("visible");
+  });
+  document.getElementById("profile-overlay").addEventListener("click", (e) => {
+    if (e.target.id === "profile-overlay") {
+      document.getElementById("profile-overlay").classList.remove("visible");
+    }
+  });
 
   function renderMessages(msgsEl, msgs) {
     const wasAtBottom = msgsEl.scrollTop + msgsEl.clientHeight >= msgsEl.scrollHeight - 40;
@@ -326,6 +464,24 @@
       // Deleted messages render identically to normal ones — content shown,
       // no tag, no styling difference. That's the whole point of the archive.
       bubble.className = "bubble " + (m.direction === "outgoing" ? "out" : "in");
+
+      if (m.reply_preview) {
+        const rp = document.createElement("div");
+        rp.className = "reply-preview";
+        rp.textContent = m.reply_preview.media_url
+          ? "[img] " + (m.reply_preview.text || "")
+          : (m.reply_preview.text || "(empty message)");
+        rp.addEventListener("click", () => {
+          const target = document.querySelector('[data-msg-id="' + m.reply_to_id + '"]');
+          if (target) target.scrollIntoView({ block: "center", behavior: "smooth" });
+        });
+        bubble.appendChild(rp);
+      } else if (m.reply_to_id) {
+        const rp = document.createElement("div");
+        rp.className = "reply-preview";
+        rp.textContent = "original message not available";
+        bubble.appendChild(rp);
+      }
 
       if (m.media_url) {
         const img = document.createElement("img");
@@ -352,6 +508,7 @@
       bubble.appendChild(meta);
 
       row.appendChild(bubble);
+      row.dataset.msgId = m.message_id;
       msgsEl.appendChild(row);
     });
 
