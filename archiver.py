@@ -201,6 +201,8 @@ client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 MAX_MEDIA_BYTES = 15 * 1024 * 1024  # 15 MB — bigger files (esp. videos) risk OOM-crashing
 # the whole process on Render's free-tier RAM limit, which then drops the
 # Telegram connection and can miss messages until it restarts.
+MAX_DP_HISTORY = 30      # how many old profile photos to keep per user
+MAX_GALLERY_ITEMS = 200  # how many media items to keep in the quick-access gallery
 
 
 async def safe_download_media(msg):
@@ -256,27 +258,49 @@ async def sync_user_profile(user: User, force: bool = False):
     except Exception as e:
         log.warning("could not fetch full user info: %s", e)
 
-    dp_url = None
-    try:
-        photo_bytes = await client.download_profile_photo(user, file=bytes)
-        if photo_bytes:
-            dp_url = upload_to_imgbb(photo_bytes)
-    except Exception as e:
-        log.warning("dp download failed: %s", e)
+    # Telegram gives every distinct profile photo its own photo_id — we use
+    # that to detect an actual DP change without re-downloading/re-uploading
+    # the same photo on every sync.
+    current_photo_id = str(user.photo.photo_id) if user.photo else None
 
-    db.collection("users").document(str(user.id)).set(
-        {
-            "user_id": user.id,
-            "username": user.username,
-            "first_name": user.first_name,
-            "last_name": user.last_name,
-            "phone": user.phone,
-            "bio": bio,
-            "dp_url": dp_url,
-            "profile_updated_at": datetime.now(timezone.utc).isoformat(),
-        },
-        merge=True,
-    )
+    doc_ref = db.collection("users").document(str(user.id))
+    existing = doc_ref.get().to_dict() or {}
+    stored_photo_id = existing.get("dp_photo_id")
+
+    update = {
+        "user_id": user.id,
+        "username": user.username,
+        "first_name": user.first_name,
+        "last_name": user.last_name,
+        "phone": user.phone,
+        "bio": bio,
+        "profile_updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    if current_photo_id != stored_photo_id:
+        dp_url = None
+        try:
+            photo_bytes = await client.download_profile_photo(user, file=bytes)
+            if photo_bytes:
+                dp_url = upload_to_imgbb(photo_bytes)
+        except Exception as e:
+            log.warning("dp download failed: %s", e)
+
+        if dp_url:
+            # Keep the OLD dp instead of discarding it — this is what powers
+            # the "DP history" view on the profile page.
+            dp_history = existing.get("dp_history", [])
+            old_dp = existing.get("dp_url")
+            if old_dp:
+                dp_history.append(
+                    {"url": old_dp, "changed_at": datetime.now(timezone.utc).isoformat()}
+                )
+                dp_history = dp_history[-MAX_DP_HISTORY:]
+            update["dp_url"] = dp_url
+            update["dp_photo_id"] = current_photo_id
+            update["dp_history"] = dp_history
+
+    doc_ref.set(update, merge=True)
 
 
 async def save_message(event, peer: User):
@@ -295,6 +319,31 @@ async def save_message(event, peer: User):
 
     now_iso = datetime.now(timezone.utc).isoformat()
     text = msg.raw_text or ""
+
+    # If this message is a reply, snapshot the original message's content
+    # right now — so the UI can show "replying to: ..." even if the original
+    # gets deleted, edited, or falls outside the loaded page later.
+    reply_to_id = msg.reply_to_msg_id
+    reply_preview = None
+    if reply_to_id:
+        try:
+            ref_doc = (
+                db.collection("users")
+                .document(str(user_id))
+                .collection("messages")
+                .document(str(reply_to_id))
+                .get()
+            )
+            if ref_doc.exists:
+                ref = ref_doc.to_dict()
+                reply_preview = {
+                    "text": ref.get("text", ""),
+                    "media_url": ref.get("media_url"),
+                    "direction": ref.get("direction"),
+                }
+        except Exception as e:
+            log.warning("could not fetch reply preview: %s", e)
+
     data = {
         "message_id": msg.id,
         "text": text,
@@ -305,16 +354,20 @@ async def save_message(event, peer: User):
         "deleted_at": None,
         "direction": "outgoing" if msg.out else "incoming",
         "updated_at": now_iso,
+        "reply_to_id": reply_to_id,
+        "reply_preview": reply_preview,
     }
 
     db.collection("users").document(str(user_id)).collection("messages").document(
         str(msg.id)
     ).set(data, merge=True)
 
+    doc_ref = db.collection("users").document(str(user_id))
+
     # Cache a preview of the latest message directly on the user doc, so the
     # sidebar (/api/users) doesn't need one extra query per user just to
     # show "last message" — that alone roughly doubles read cost otherwise.
-    db.collection("users").document(str(user_id)).set(
+    doc_ref.set(
         {
             "last_message": {
                 "text": text,
@@ -325,6 +378,20 @@ async def save_message(event, peer: User):
         },
         merge=True,
     )
+
+    # Keep a running gallery of media on the user doc too, for the profile
+    # page — avoids having to scan the whole messages history to build it.
+    if media_url:
+        try:
+            existing = doc_ref.get().to_dict() or {}
+            gallery = existing.get("media_gallery", [])
+            gallery.append(
+                {"url": media_url, "sent_at": data["sent_at"], "direction": data["direction"]}
+            )
+            gallery = gallery[-MAX_GALLERY_ITEMS:]
+            doc_ref.set({"media_gallery": gallery}, merge=True)
+        except Exception as e:
+            log.warning("could not update media gallery: %s", e)
 
     await sync_user_profile(peer)
 
