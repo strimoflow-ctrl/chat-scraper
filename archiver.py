@@ -152,6 +152,70 @@ class StatusHandler(BaseHTTPRequestHandler):
         self.send_response(404)
         self.end_headers()
 
+    def do_POST(self):
+        parsed = urlparse(self.path)
+        path = parsed.path
+
+        if path == "/api/media/delete":
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                body = json.loads(self.rfile.read(length) or b"{}")
+            except Exception:
+                self._send_json({"error": "invalid JSON body"}, status=400)
+                return
+
+            user_id = body.get("user_id")
+            message_id = body.get("message_id")
+            if not user_id or not message_id:
+                self._send_json({"error": "user_id and message_id are required"}, status=400)
+                return
+
+            try:
+                msg_ref = (
+                    db.collection("users")
+                    .document(str(user_id))
+                    .collection("messages")
+                    .document(str(message_id))
+                )
+                msg_doc = msg_ref.get()
+                if not msg_doc.exists:
+                    self._send_json({"error": "message not found"}, status=404)
+                    return
+
+                msg_data = msg_doc.to_dict()
+                delete_url = msg_data.get("media_delete_url")
+
+                # Permanently remove from imgbb. If this fails (e.g. link
+                # already used, or imgbb hiccup), we still proceed to clear
+                # it from our own records — the goal is it disappears from
+                # the archive either way.
+                deleted_remote = delete_from_imgbb(delete_url)
+
+                msg_ref.set(
+                    {
+                        "media_url": None,
+                        "media_delete_url": None,
+                        "updated_at": datetime.now(timezone.utc).isoformat(),
+                    },
+                    merge=True,
+                )
+
+                user_ref = db.collection("users").document(str(user_id))
+                user_doc = user_ref.get()
+                user_data = user_doc.to_dict() or {}
+                gallery = user_data.get("media_gallery", [])
+                gallery = [g for g in gallery if g.get("message_id") != message_id]
+                user_ref.set({"media_gallery": gallery}, merge=True)
+
+                self._send_json({"success": True, "deleted_from_imgbb": deleted_remote})
+            except Exception as e:
+                log.error("/api/media/delete failed:\n%s", traceback.format_exc())
+                self._send_json({"error": str(e)}, status=500)
+            return
+
+        self.send_response(404)
+        self.end_headers()
+
     def log_message(self, format, *args):
         pass  # keep Render logs clean, no per-request spam
 
@@ -218,8 +282,10 @@ async def safe_download_media(msg):
         return None
 
 
-def upload_to_imgbb(file_bytes: bytes) -> str | None:
-    """Uploads raw bytes to imgbb and returns the public URL, or None on failure."""
+def upload_to_imgbb(file_bytes: bytes):
+    """Uploads raw bytes to imgbb. Returns (url, delete_url) — delete_url is
+    what lets us actually, permanently remove the image later (the library
+    delete feature needs this; imgbb has no other way to delete by URL)."""
     try:
         resp = requests.post(
             "https://api.imgbb.com/1/upload",
@@ -230,10 +296,23 @@ def upload_to_imgbb(file_bytes: bytes) -> str | None:
             timeout=30,
         )
         resp.raise_for_status()
-        return resp.json()["data"]["url"]
+        data = resp.json()["data"]
+        return data.get("url"), data.get("delete_url")
     except Exception as e:
         log.error("imgbb upload failed: %s", e)
-        return None
+        return None, None
+
+
+def delete_from_imgbb(delete_url: str) -> bool:
+    """Visits imgbb's one-time delete link to permanently remove the hosted image."""
+    if not delete_url:
+        return False
+    try:
+        resp = requests.get(delete_url, timeout=20)
+        return resp.status_code < 400
+    except Exception as e:
+        log.error("imgbb delete failed: %s", e)
+        return False
 
 
 async def sync_user_profile(user: User, force: bool = False):
@@ -282,7 +361,7 @@ async def sync_user_profile(user: User, force: bool = False):
         try:
             photo_bytes = await client.download_profile_photo(user, file=bytes)
             if photo_bytes:
-                dp_url = upload_to_imgbb(photo_bytes)
+                dp_url, _dp_delete_url = upload_to_imgbb(photo_bytes)
         except Exception as e:
             log.warning("dp download failed: %s", e)
 
@@ -312,10 +391,11 @@ async def save_message(event, peer: User):
     MSG_TO_USER[msg.id] = user_id
 
     media_url = None
+    media_delete_url = None
     if msg.media:
         file_bytes = await safe_download_media(msg)
         if file_bytes:
-            media_url = upload_to_imgbb(file_bytes)
+            media_url, media_delete_url = upload_to_imgbb(file_bytes)
 
     now_iso = datetime.now(timezone.utc).isoformat()
     text = msg.raw_text or ""
@@ -348,6 +428,7 @@ async def save_message(event, peer: User):
         "message_id": msg.id,
         "text": text,
         "media_url": media_url,
+        "media_delete_url": media_delete_url,
         "sent_at": msg.date.isoformat() if msg.date else None,
         "edited_at": None,
         "deleted": False,
@@ -386,7 +467,13 @@ async def save_message(event, peer: User):
             existing = doc_ref.get().to_dict() or {}
             gallery = existing.get("media_gallery", [])
             gallery.append(
-                {"url": media_url, "sent_at": data["sent_at"], "direction": data["direction"]}
+                {
+                    "url": media_url,
+                    "delete_url": media_delete_url,
+                    "message_id": msg.id,
+                    "sent_at": data["sent_at"],
+                    "direction": data["direction"],
+                }
             )
             gallery = gallery[-MAX_GALLERY_ITEMS:]
             doc_ref.set({"media_gallery": gallery}, merge=True)
